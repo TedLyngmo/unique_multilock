@@ -2,8 +2,8 @@
 #define UNIQUE_MULTILOCK_HPP_A2BDEBD0_71FC_11F0_9AA4_90B11C0C0FF8
 
 #include <chrono>
-#include <cstdint>
 #include <concepts>
+#include <cstdint>
 #include <mutex>
 #include <utility>
 
@@ -21,7 +21,9 @@ concept Lockable = BasicLockable<T> && requires(T t) {
 
 template<class T>
 concept TimedLockable = Lockable<T> && requires(T t) {
-    { t.try_lock_for(std::chrono::duration<std::int_least32_t, std::ratio<1, 999999999>>{}) } -> std::same_as<bool>;
+    { // using an unusal ratio to avoid false positives for hardcoded duration types
+        t.try_lock_for(std::chrono::duration<std::int_least32_t, std::ratio<1, 999999999>>{})
+    } -> std::same_as<bool>;
     { t.try_lock_until(std::chrono::steady_clock{}) } -> std::same_as<bool>;
 };
 
@@ -75,7 +77,7 @@ public:
     void lock() {
         if constexpr(sizeof...(Ms) == 1) {
             std::get<0>(m_ms)->lock();
-        } else {
+        } else if constexpr(sizeof...(Ms) > 1) {
             std::apply([](auto... ms) { std::lock(*ms...); }, m_ms);
         }
         m_locked = true;
@@ -87,10 +89,10 @@ public:
     int try_lock() // note: returns -1 for success like std::try_lock
         requires(... && Lockable<Ms>)
     {
-        int res;
+        int res = -1;
         if constexpr(sizeof...(Ms) == 1) {
             res = std::get<0>(m_ms)->try_lock() ? -1 : 0;
-        } else {
+        } else if constexpr(sizeof...(Ms) > 1) {
             res = std::apply([](auto... ms) { return std::try_lock(*ms...); }, m_ms);
         }
         if(res == -1) m_locked = true;
