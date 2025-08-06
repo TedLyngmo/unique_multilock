@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <system_error>
 #include <utility>
 
 namespace lyn {
@@ -76,19 +77,40 @@ public:
     bool owns_lock() const noexcept { return m_locked; }
     explicit operator bool() const noexcept { return m_locked; }
 
+    void unlock() {
+        if(not m_locked) {
+            throw std::system_error(std::make_error_code(std::errc::operation_not_permitted));
+        }
+        std::apply([](auto... ms) { (..., ms->unlock()); }, m_ms);
+        m_locked = false;
+    }
+
+private:
+    void lock_check() {
+        if(m_locked) {
+            throw std::system_error(std::make_error_code(std::errc::resource_deadlock_would_occur));
+        }
+        if constexpr(sizeof...(Ms) != 0) {
+            if(std::get<0>(m_ms) == nullptr) {
+                throw std::system_error(std::make_error_code(std::errc::operation_not_permitted));
+            }
+        }
+    }
+
+public:
     void lock() {
+        lock_check();
         if constexpr(sizeof...(Ms) == 1) {
             std::get<sizeof...(Ms) - 1>(m_ms)->lock();
         } else if constexpr(sizeof...(Ms) > 1) {
             std::apply([](auto... ms) { std::lock(*ms...); }, m_ms);
         }
+
         m_locked = true;
     }
-    void unlock() noexcept {
-        std::apply([](auto... ms) { (..., ms->unlock()); }, m_ms);
-        m_locked = false;
-    }
-    int try_lock() // note: returns -1 for success like std::try_lock
+
+private:
+    int try_lock_unchecked()
         requires(... && Lockable<Ms>)
     {
         int res = -1;
@@ -100,11 +122,20 @@ public:
         if(res == -1) m_locked = true;
         return res;
     }
+
+public:
+    int try_lock() // note: returns -1 for success like std::try_lock
+        requires(... && Lockable<Ms>)
+    {
+        lock_check();
+        return try_lock_unchecked();
+    }
     template<class Clock, class Duration>
         requires(... && Lockable<Ms>) // TimedLockable?
     int try_lock_until(const std::chrono::time_point<Clock, Duration>& tp) {
+        lock_check();
         int res;
-        while((res = try_lock()) != -1 && tp < Clock::now()) {
+        while((res = try_lock_unchecked()) != -1 && tp < Clock::now()) {
         }
         return res;
     }
