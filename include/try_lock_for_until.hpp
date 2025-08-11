@@ -2,7 +2,6 @@
 #define TRY_LOCK_FOR_UNTIL_HPP_6FE470F4_744E_11F0_BE3A_90B11C0C0FF8
 #include "detail/concepts.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -37,50 +36,26 @@ namespace detail {
     template<size_t N>
     using make_tuple_of_rotating_index_sequences = rot_detail::rot_help<std::make_index_sequence<N>>::type;
     //-------------------------------------------------------------------------
-    namespace rev_detail {
-        template<template<class A, A...> class C, class T, T... I, std::size_t... J>
-        constexpr auto rev_help(C<T, I...> const&, std::index_sequence<J...>)
-        // -> C<T, std::get<sizeof...(J) - J - 1>(std::tuple{I...})...>;
-        { // workaround for MSVC:
-            constexpr std::array<T, sizeof...(I)> arr{I...};
-            return C<T, arr[sizeof...(J) - J - 1]...>{};
-        }
-    } // namespace rev_detail
-    template<class T>
-    using reverse_sequence = decltype(rev_detail::rev_help(std::declval<T>(), std::make_index_sequence<T::size()>{}));
-    //-------------------------------------------------------------------------
     enum class rec_res { fail = -2, success = -1 };
     template<std::size_t I>
     constexpr rec_res timeout = static_cast<rec_res>(static_cast<int>(I));
     //-------------------------------------------------------------------------
     template<class Timepoint, class Locks, class... Seqs>
     int try_lock_until_impl(const Timepoint& tp, Locks locks, std::tuple<Seqs...>) {
-        auto try_once = []<class TUL, size_t... RIs>(TUL ul, std::index_sequence<RIs...>) {
-            // lock from last to first in the tuple of unique_locks
-            if((... && std::get<RIs>(ul).try_lock())) {
-                (..., std::get<RIs>(ul).release());
-                return true;
-            }
-            return false; // all unlocked in the reverse locking order
-        };
-        auto try_until = [&]<std::size_t I0, size_t... Is>(std::index_sequence<I0, Is...>) {
+        auto try_seq = [&]<std::size_t I0, size_t... Is>(std::index_sequence<I0, Is...>) {
             if(std::unique_lock first{std::get<I0>(locks), tp}) {
-                return [&]<std::size_t... RIs>(std::index_sequence<RIs...>) {
-                    // create a tuple of unique_locks in reverse order
-                    if(try_once(std::tuple{std::unique_lock{std::get<RIs>(locks), std::defer_lock}...},
-                                reverse_sequence<std::make_index_sequence<sizeof...(RIs)>>{})) {
-                        first.release();
-                        return rec_res::success;
-                    }
-                    return rec_res::fail;
-                }(reverse_sequence<std::index_sequence<Is...>>{});
+                if(std::try_lock(std::get<Is>(locks)...) == -1) {
+                    first.release();
+                    return rec_res::success;
+                }
+                return rec_res::fail;
             }
             return timeout<I0>;
         };
 
         // try all the rotations in Seqs until one doesn't return rec_res::fail
         rec_res res;
-        while(not(... || ((res = try_until(Seqs{})) != rec_res::fail)));
+        while(not(... || ((res = try_seq(Seqs{})) != rec_res::fail)));
         return static_cast<int>(res);
     }
 } // namespace detail
