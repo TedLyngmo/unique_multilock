@@ -1,12 +1,13 @@
 #ifndef TRY_LOCK_FOR_UNTIL_HPP_6FE470F4_744E_11F0_BE3A_90B11C0C0FF8
 #define TRY_LOCK_FOR_UNTIL_HPP_6FE470F4_744E_11F0_BE3A_90B11C0C0FF8
 #include "detail/concepts.hpp"
-
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <tuple>
 #include <utility>
+
 namespace lyn {
 namespace detail {
     namespace rot_detail {
@@ -47,34 +48,42 @@ namespace detail {
         constexpr int timeout = static_cast<int>(I);
     } // namespace result
     //-------------------------------------------------------------------------
-    template<class Timepoint, class Locks, class... Seqs>
-    int try_lock_until_impl(const Timepoint& tp, Locks locks, std::tuple<Seqs...>) {
+    constexpr int friendly_try_lock() {
+        return -1;
+    }
+    int friendly_try_lock(auto& l1) {
+        return -static_cast<int>(l1.try_lock());
+    }
+    int friendly_try_lock(auto&... ls) {
+        return std::try_lock(ls...);
+    }
+    //-------------------------------------------------------------------------
+    template<class Clock, class Duration, class Locks, class... Seqs>
+    int try_lock_until_impl(const std::chrono::time_point<Clock, Duration>& tp, Locks locks, std::tuple<Seqs...>) {
         if constexpr(sizeof...(Seqs) == 0) {
             return result::success;
-        } else if constexpr(sizeof...(Seqs) == 1) {
-            if(std::get<0>(locks).try_lock()) {
-                return result::success;
-            }
-            return result::timeout<0>;
         } else {
+            size_t next = 0;
             auto try_seq = [&]<std::size_t I0, size_t... Is>(std::index_sequence<I0, Is...>) {
-                if(std::unique_lock first{std::get<I0>(locks), tp}) {
-                    auto lock_the_rest = [&] {
-                        if constexpr(sizeof...(Is) >= 2) {
-                            return std::try_lock(std::get<Is>(locks)...) == -1;
-                        } else { // I0 is either 0 or 1
-                            return std::get<not I0>(locks).try_lock();
-                        }
-                    };
-                    if(lock_the_rest()) {
-                        first.release();
-                        return result::success;
-                    }
-                    return result::fail;
+                if constexpr(sizeof...(Is) != 0) {
+                    if(I0 != next) return result::fail;
                 }
+                do {
+                    if(std::unique_lock first{std::get<I0>(locks), tp}) {
+                        int res = friendly_try_lock(std::get<Is>(locks)...);
+                        if(res == result::success) {
+                            first.release();
+                            return result::success;
+                        }
+                        if constexpr(sizeof...(Is) != 0) {
+                            // try to unique_lock the failing one next
+                            next = std::array{Is...}[static_cast<std::size_t>(res)];
+                        }
+                        return result::fail;
+                    }
+                } while(Clock::now() < tp); // retry if spurious return
                 return result::timeout<I0>;
             };
-
             // try all the rotations in Seqs until one doesn't return result::fail
             int res;
             while(not(... || ((res = try_seq(Seqs{})) != result::fail)));
