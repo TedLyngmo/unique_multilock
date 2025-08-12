@@ -62,8 +62,8 @@ namespace detail {
                     auto lock_the_rest = [&] {
                         if constexpr(sizeof...(Is) >= 2) {
                             return std::try_lock(std::get<Is>(locks)...) == -1;
-                        } else {
-                            return std::get<0>(locks).try_lock();
+                        } else { // I0 is either 0 or 1
+                            return std::get<not I0>(locks).try_lock();
                         }
                     };
                     if(lock_the_rest()) {
