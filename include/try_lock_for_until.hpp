@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <tuple>
 #include <utility>
@@ -65,9 +66,6 @@ namespace detail {
         } else {
             size_t next = 0;
             auto try_seq = [&]<std::size_t I0, size_t... Is>(std::index_sequence<I0, Is...>) {
-                if constexpr(sizeof...(Is) != 0) {
-                    if(I0 != next) return result::fail;
-                }
                 do {
                     if(std::unique_lock first{std::get<I0>(locks), tp}) {
                         int res = friendly_try_lock(std::get<Is>(locks)...);
@@ -84,9 +82,11 @@ namespace detail {
                 } while(Clock::now() < tp); // retry if spurious return
                 return result::timeout<I0>;
             };
-            // try all the rotations in Seqs until one doesn't return result::fail
+
+            std::array<std::function<int()>, sizeof...(Seqs)> seqs{[&] { return try_seq(Seqs{}); }...};
+            // try the rotation in Seqs while it returns result::fail
             int res;
-            while(not(... || ((res = try_seq(Seqs{})) != result::fail)));
+            while((res = seqs[next]()) == result::fail);
             return res;
         }
     }
