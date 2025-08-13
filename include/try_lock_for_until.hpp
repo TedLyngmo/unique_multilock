@@ -4,7 +4,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <mutex>
 #include <tuple>
 #include <utility>
@@ -59,42 +58,47 @@ namespace detail {
         return std::try_lock(ls...);
     }
     //-------------------------------------------------------------------------
+    template<class Clock, class Duration, class Locks, std::size_t I0, size_t... Is>
+    int try_sequence(std::size_t& next, const std::chrono::time_point<Clock, Duration>& tp, Locks& locks,
+                     std::index_sequence<I0, Is...>) {
+        do {
+            if(std::unique_lock first{std::get<I0>(locks), tp}) {
+                int res = friendly_try_lock(std::get<Is>(locks)...);
+                if(res == result::success) {
+                    first.release();
+                    return result::success;
+                }
+                if constexpr(sizeof...(Is) != 0) {
+                    // try to unique_lock the failing one next
+                    next = std::array{Is...}[static_cast<std::size_t>(res)];
+                }
+                return result::fail;
+            }
+        } while(Clock::now() < tp); // retry if spurious return
+        return result::timeout<I0>;
+    }
+    //-------------------------------------------------------------------------
     template<class Clock, class Duration, class Locks, class... Seqs>
-    int try_lock_until_impl(const std::chrono::time_point<Clock, Duration>& tp, Locks locks, std::tuple<Seqs...>) {
-        if constexpr(sizeof...(Seqs) == 0) {
-            return result::success;
-        } else {
-            size_t next = 0;
-            auto try_seq = [&]<std::size_t I0, size_t... Is>(std::index_sequence<I0, Is...>) {
-                do {
-                    if(std::unique_lock first{std::get<I0>(locks), tp}) {
-                        int res = friendly_try_lock(std::get<Is>(locks)...);
-                        if(res == result::success) {
-                            first.release();
-                            return result::success;
-                        }
-                        if constexpr(sizeof...(Is) != 0) {
-                            // try to unique_lock the failing one next
-                            next = std::array{Is...}[static_cast<std::size_t>(res)];
-                        }
-                        return result::fail;
-                    }
-                } while(Clock::now() < tp); // retry if spurious return
-                return result::timeout<I0>;
-            };
+    int try_lock_until_impl(const std::chrono::time_point<Clock, Duration>& end_time, Locks locks, std::tuple<Seqs...>) {
+        using func_sig = int (*)(std::size_t&, const std::chrono::time_point<Clock, Duration>&, Locks&);
 
-            std::array<std::function<int()>, sizeof...(Seqs)> seqs{[&] { return try_seq(Seqs{}); }...};
-            // try the rotation in Seqs while it returns result::fail
-            int res;
-            while((res = seqs[next]()) == result::fail);
-            return res;
-        }
+        std::array<func_sig, sizeof...(Seqs)> seqs{{{+[](std::size_t& next, const std::chrono::time_point<Clock, Duration>& tp,
+                                                         Locks& lks) { return try_sequence(next, tp, lks, Seqs{}); }}...}};
+
+        // try rotations in seqs while they return result::fail
+        int res = 0;
+        for(size_t next = 0; (res = seqs[next](next, end_time, locks)) == result::fail;);
+        return res;
     }
 } // namespace detail
 
 template<class Clock, class Duration, detail::TimedLockable... Ls>
 [[nodiscard]] int try_lock_until(const std::chrono::time_point<Clock, Duration>& tp, Ls&... ls) {
-    return detail::try_lock_until_impl(tp, std::tie(ls...), detail::make_tuple_of_rotating_index_sequences<sizeof...(Ls)>{});
+    if constexpr(sizeof...(Ls) == 0) {
+        return detail::result::success;
+    } else {
+        return detail::try_lock_until_impl(tp, std::tie(ls...), detail::make_tuple_of_rotating_index_sequences<sizeof...(Ls)>{});
+    }
 }
 
 template<class Rep, class Period, detail::TimedLockable... Ls>
