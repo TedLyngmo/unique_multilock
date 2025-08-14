@@ -49,32 +49,32 @@ namespace detail {
         return std::try_lock(ls...);
     }
     //-------------------------------------------------------------------------
-    template<class Clock, class Duration, class Locks, std::size_t I0, std::size_t... Is>
-    std::size_t try_sequence(const std::chrono::time_point<Clock, Duration>& tp, Locks& locks, std::index_sequence<I0, Is...>) {
-        do {
-            if constexpr(sizeof...(Is) == 0) {
-                if(std::get<I0>(locks).try_lock_until(tp)) {
-                    return result::success;
-                }
-            } else if(std::unique_lock first{std::get<I0>(locks), tp}) {
-                int res = friendly_try_lock(std::get<Is>(locks)...);
-                if(res == -1) {
-                    first.release();
-                    return result::success;
-                }
-                // return index to try_lock_until next round
-                return std::array{Is...}[static_cast<std::size_t>(res)];
-            }
-        } while(Clock::now() < tp); // retry if spurious return
-        return result::timeout;
-    }
-    //-------------------------------------------------------------------------
     template<class Timepoint, class Locks, class... Seqs>
     bool try_lock_until_impl(const Timepoint& end_time, Locks locks, type_pack<Seqs...>) {
         using func_sig = std::size_t (*)(const Timepoint&, Locks&);
 
-        std::array<func_sig, sizeof...(Seqs)> seqs{
-            {{+[](const Timepoint& tp, Locks& lks) { return try_sequence(tp, lks, Seqs{}); }}...}};
+        // one function per lockable/sequence to try:
+        std::array<func_sig, sizeof...(Seqs)> seqs{{+[](const Timepoint& tp, Locks& lks) {
+            return []<class Clock, class Duration, std::size_t I0, std::size_t... Is>(
+                       const std::chrono::time_point<Clock, Duration>& itp, Locks& lcks, std::index_sequence<I0, Is...>) {
+                do {
+                    if constexpr(sizeof...(Is) == 0) {
+                        if(std::get<I0>(lcks).try_lock_until(itp)) {
+                            return result::success;
+                        }
+                    } else if(std::unique_lock first{std::get<I0>(lcks), itp}) {
+                        int res = friendly_try_lock(std::get<Is>(lcks)...);
+                        if(res == -1) {
+                            first.release();
+                            return result::success;
+                        }
+                        // return the index to try_lock_until next round
+                        return std::array{Is...}[static_cast<std::size_t>(res)];
+                    }
+                } while(Clock::now() < itp); // retry if spurious return
+                return result::timeout;
+            }(tp, lks, Seqs{});
+        }...}};
 
         // try rotations in seqs while they return an index sequence to try next
         std::size_t ret = 0;
