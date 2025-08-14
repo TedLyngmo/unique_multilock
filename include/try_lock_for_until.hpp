@@ -51,10 +51,8 @@ namespace detail {
     //-------------------------------------------------------------------------
     template<class Timepoint, class Locks, class... Seqs>
     bool try_lock_until_impl(const Timepoint& end_time, Locks locks, type_pack<Seqs...>) {
-        using func_sig = std::size_t (*)(const Timepoint&, Locks&);
-
-        // one function per lockable/sequence to try:
-        std::array<func_sig, sizeof...(Seqs)> seqs{{+[](const Timepoint& tp, Locks& lks) {
+        // an array with one function per lockable/sequence to try:
+        std::array<std::size_t (*)(const Timepoint&, Locks&), sizeof...(Seqs)> seqs{{+[](const Timepoint& tp, Locks& lks) {
             return []<class Clock, class Duration, std::size_t I0, std::size_t... Is>(
                        const std::chrono::time_point<Clock, Duration>& itp, Locks& lcks, std::index_sequence<I0, Is...>) {
                 do {
