@@ -11,23 +11,25 @@
 
 namespace lyn {
 namespace detail {
+    template<class...>
+    struct type_pack {}; // seems to compile slightly faster than using a tuple
     namespace rot_detail {
         template<class...>
         struct rot_help;
 
         template<>
         struct rot_help<std::index_sequence<>> {
-            using type = std::tuple<>;
+            using type = type_pack<>;
+        };
+
+        template<size_t I0, size_t... Is, class... Seqs> // term
+        struct rot_help<std::index_sequence<I0, Is...>, std::index_sequence<I0, Is...>, Seqs...> {
+            using type = type_pack<Seqs...>;
         };
 
         template<std::size_t I0> // extra terminator for MSVC
         struct rot_help<std::index_sequence<I0>> {
-            using type = std::tuple<std::index_sequence<I0>>;
-        };
-
-        template<size_t I0, size_t... Is, class... Seqs>
-        struct rot_help<std::index_sequence<I0, Is...>, std::index_sequence<I0, Is...>, Seqs...> {
-            using type = std::tuple<Seqs...>;
+            using type = type_pack<std::index_sequence<I0>>;
         };
 
         template<size_t I0, size_t... Is>
@@ -40,7 +42,7 @@ namespace detail {
     } // namespace rot_detail
 
     template<size_t N>
-    using make_tuple_of_rotating_index_sequences = rot_detail::rot_help<std::make_index_sequence<N>>::type;
+    using make_pack_of_rotating_index_sequences = rot_detail::rot_help<std::make_index_sequence<N>>::type;
     //-------------------------------------------------------------------------
     namespace result {
         inline constexpr auto timeout = static_cast<std::size_t>(-2);
@@ -78,7 +80,7 @@ namespace detail {
     }
     //-------------------------------------------------------------------------
     template<class Timepoint, class Locks, class... Seqs>
-    bool try_lock_until_impl(const Timepoint& end_time, Locks locks, std::tuple<Seqs...>) {
+    bool try_lock_until_impl(const Timepoint& end_time, Locks locks, type_pack<Seqs...>) {
         using func_sig = std::size_t (*)(const Timepoint&, Locks&);
 
         std::array<func_sig, sizeof...(Seqs)> seqs{
@@ -96,7 +98,7 @@ template<class Clock, class Duration, detail::TimedLockable... Ls>
     if constexpr(sizeof...(Ls) == 0) {
         return detail::result::success;
     } else {
-        return detail::try_lock_until_impl(tp, std::tie(ls...), detail::make_tuple_of_rotating_index_sequences<sizeof...(Ls)>{});
+        return detail::try_lock_until_impl(tp, std::tie(ls...), detail::make_pack_of_rotating_index_sequences<sizeof...(Ls)>{});
     }
 }
 
