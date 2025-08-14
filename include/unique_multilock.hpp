@@ -1,5 +1,8 @@
 #ifndef UNIQUE_MULTILOCK_HPP_A2BDEBD0_71FC_11F0_9AA4_90B11C0C0FF8
 #define UNIQUE_MULTILOCK_HPP_A2BDEBD0_71FC_11F0_9AA4_90B11C0C0FF8
+#include "detail/concepts.hpp"
+#include "try_lock_for_until.hpp"
+
 #include <chrono>
 #include <concepts>
 #include <cstdint>
@@ -9,28 +12,8 @@
 #include <utility>
 
 namespace lyn {
-template<class T>
-concept BasicLockable = requires(T t) {
-    t.lock();
-    t.unlock();
-};
-
-template<class T>
-concept Lockable = BasicLockable<T> && requires(T t) {
-    { t.try_lock() } -> std::same_as<bool>;
-};
-
-template<class T>
-concept TimedLockable = Lockable<T> && requires(T t) {
-    { // using an unusal ratio to avoid false positives for hardcoded duration
-      // types
-        t.try_lock_for(std::chrono::duration<std::int_least32_t, std::ratio<1, 999999999>>{})
-    } -> std::same_as<bool>;
-    { t.try_lock_until(std::chrono::steady_clock{}) } -> std::same_as<bool>;
-};
-
 template<class... Ms>
-    requires((... && Lockable<Ms>) || (sizeof...(Ms) == 1 && (... && BasicLockable<Ms>)))
+    requires((... && detail::Lockable<Ms>) || (sizeof...(Ms) == 1 && (... && detail::BasicLockable<Ms>)))
 class unique_multilock {
 public:
     // rule of 5 begin --------------------------------------------------------
@@ -52,18 +35,20 @@ public:
     unique_multilock(std::adopt_lock_t, Ms&... ms) noexcept : m_ms(std::addressof(ms)...), m_locked(true) {}
 
     unique_multilock(std::try_to_lock_t, Ms&... ms)
-        requires(... && Lockable<Ms>)
+        requires(... && detail::Lockable<Ms>)
         : m_ms(std::addressof(ms)...), m_locked(try_lock() == -1) {}
 
     template<class Rep, class Period>
-        requires(... && Lockable<Ms>) // TimedLockable?
-    unique_multilock(const std::chrono::duration<Rep, Period>& dur, Ms&... ms) :
-        m_ms(std::addressof(ms)...), m_locked(try_lock_for(dur) == -1) {}
+        requires(... && detail::TimedLockable<Ms>)
+    unique_multilock(const std::chrono::duration<Rep, Period>& dur, Ms&... ms) : m_ms(std::addressof(ms)...) {
+        try_lock_for(dur);
+    }
 
     template<class Clock, class Duration>
-        requires(... && Lockable<Ms>) // TimedLockable?
-    unique_multilock(const std::chrono::time_point<Clock, Duration>& tp, Ms&... ms) :
-        m_ms(std::addressof(ms)...), m_locked(try_lock_until(tp) == -1) {}
+        requires(... && detail::TimedLockable<Ms>)
+    unique_multilock(const std::chrono::time_point<Clock, Duration>& tp, Ms&... ms) : m_ms(std::addressof(ms)...) {
+        try_lock_until(tp);
+    }
 
     void swap(unique_multilock& other) noexcept {
         std::swap(m_ms, other.m_ms);
@@ -105,44 +90,32 @@ public:
         } else if constexpr(sizeof...(Ms) > 1) {
             std::apply([](auto... ms) { std::lock(*ms...); }, m_ms);
         }
-
         m_locked = true;
     }
 
-private:
-    int try_lock_unchecked()
-        requires(... && Lockable<Ms>)
-    {
-        int res = -1;
-        if constexpr(sizeof...(Ms) == 1) {
-            res = std::get<sizeof...(Ms) - 1>(m_ms)->try_lock() ? -1 : 0;
-        } else if constexpr(sizeof...(Ms) > 1) {
-            res = std::apply([](auto... ms) { return std::try_lock(*ms...); }, m_ms);
-        }
-        if(res == -1) m_locked = true;
-        return res;
-    }
-
-public:
     int try_lock() // note: returns -1 for success like std::try_lock
-        requires(... && Lockable<Ms>)
+        requires(... && detail::Lockable<Ms>)
     {
         lock_check();
-        return try_lock_unchecked();
+        if constexpr(sizeof...(Ms) == 0) {
+            return -1;
+        } else if constexpr(sizeof...(Ms) == 1) {
+            return -static_cast<int>(std::get<sizeof...(Ms) - 1>(m_ms)->try_lock());
+        } else {
+            return std::apply([](auto... ms) { return std::try_lock(*ms...); }, m_ms);
+        }
     }
     template<class Clock, class Duration>
-        requires(... && Lockable<Ms>) // TimedLockable?
-    int try_lock_until(const std::chrono::time_point<Clock, Duration>& tp) {
+        requires(... && detail::TimedLockable<Ms>)
+    bool try_lock_until(const std::chrono::time_point<Clock, Duration>& tp) {
         lock_check();
-        int res;
-        while((res = try_lock_unchecked()) != -1 && tp < Clock::now()) {
-        }
-        return res;
+        return m_locked = std::apply([&](auto... ms) { return lyn::try_lock_until(tp, *ms...); }, m_ms);
     }
     template<class Rep, class Period>
-        requires(... && Lockable<Ms>) // TimedLockable?
-    int try_lock_for(const std::chrono::duration<Rep, Period>& dur) {
-        return try_lock_until(std::chrono::steady_clock::now() + dur);
+        requires(... && detail::TimedLockable<Ms>)
+    bool try_lock_for(const std::chrono::duration<Rep, Period>& dur) {
+        lock_check();
+        return m_locked = std::apply([&](auto... ms) { return lyn::try_lock_for(dur, *ms...); }, m_ms);
     }
 
 private:
