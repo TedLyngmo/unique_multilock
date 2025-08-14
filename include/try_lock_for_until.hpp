@@ -60,19 +60,18 @@ namespace detail {
     template<class Clock, class Duration, class Locks, std::size_t I0, size_t... Is>
     std::size_t try_sequence(const std::chrono::time_point<Clock, Duration>& tp, Locks& locks, std::index_sequence<I0, Is...>) {
         do {
-            if(std::unique_lock first{std::get<I0>(locks), tp}) {
-                if constexpr(sizeof...(Is) == 0) {
+            if constexpr(sizeof...(Is) == 0) {
+                if(std::get<I0>(locks).try_lock_until(tp)) {
+                    return result::success;
+                }
+            } else if(std::unique_lock first{std::get<I0>(locks), tp}) {
+                int res = friendly_try_lock(std::get<Is>(locks)...);
+                if(res == -1) {
                     first.release();
                     return result::success;
-                } else {
-                    int res = friendly_try_lock(std::get<Is>(locks)...);
-                    if(res == -1) {
-                        first.release();
-                        return result::success;
-                    }
-                    // try to unique_lock the failing one next
-                    return std::array{Is...}[static_cast<std::size_t>(res)];
                 }
+                // return index to try_lock_until next round
+                return std::array{Is...}[static_cast<std::size_t>(res)];
             }
         } while(Clock::now() < tp); // retry if spurious return
         return result::timeout;
