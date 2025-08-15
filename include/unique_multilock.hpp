@@ -36,7 +36,9 @@ public:
 
     unique_multilock(std::try_to_lock_t, Ms&... ms)
         requires(... && detail::Lockable<Ms>)
-        : m_ms(std::addressof(ms)...), m_locked(try_lock() == -1) {}
+        : m_ms(std::addressof(ms)...) {
+        try_lock();
+    }
 
     template<class Rep, class Period>
         requires(... && detail::TimedLockable<Ms>)
@@ -97,13 +99,16 @@ public:
         requires(... && detail::Lockable<Ms>)
     {
         lock_check();
+        int rv;
         if constexpr(sizeof...(Ms) == 0) {
-            return -1;
+            rv = -1;
         } else if constexpr(sizeof...(Ms) == 1) {
-            return -static_cast<int>(std::get<sizeof...(Ms) - 1>(m_ms)->try_lock());
+            rv = -static_cast<int>(std::get<sizeof...(Ms) - 1>(m_ms)->try_lock());
         } else {
-            return std::apply([](auto... ms) { return std::try_lock(*ms...); }, m_ms);
+            rv = std::apply([](auto... ms) { return std::try_lock(*ms...); }, m_ms);
         }
+        m_locked = rv == -1;
+        return rv;
     }
     template<class Clock, class Duration>
         requires(... && detail::TimedLockable<Ms>)
