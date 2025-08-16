@@ -12,8 +12,7 @@
 #include <utility>
 
 namespace lyn {
-template<class... Ms>
-    requires((... && detail::Lockable<Ms>) || (sizeof...(Ms) == 1 && (... && detail::BasicLockable<Ms>)))
+template<detail::BasicLockable... Ms>
 class unique_multilock {
 public:
     // rule of 5 begin --------------------------------------------------------
