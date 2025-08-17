@@ -29,7 +29,12 @@ public:
     }
     // rule of 5 end ----------------------------------------------------------
 
-    unique_multilock(Ms&... ms) : m_ms(std::addressof(ms)...) { lock(); }
+    unique_multilock(Ms&... ms) :
+        m_ms(std::addressof(ms)...)
+            requires(sizeof...(Ms) == 1 || (... && detail::Lockable<Ms>))
+    {
+        lock();
+    }
     unique_multilock(std::defer_lock_t, Ms&... ms) noexcept : m_ms(std::addressof(ms)...) {}
     unique_multilock(std::adopt_lock_t, Ms&... ms) noexcept : m_ms(std::addressof(ms)...), m_locked(true) {}
 
@@ -84,7 +89,9 @@ private:
     }
 
 public:
-    void lock() {
+    void lock()
+        requires(sizeof...(Ms) == 1 || (... && detail::Lockable<Ms>))
+    {
         lock_check();
         if constexpr(sizeof...(Ms) == 1) {
             std::get<sizeof...(Ms) - 1>(m_ms)->lock();
